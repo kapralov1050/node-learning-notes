@@ -1,0 +1,16 @@
+<%- include('../partials/header') %>
+
+<h1>Статьи</h1>
+
+<% if (posts.length === 0) { %>
+  <p>Статей пока нет</p>
+<% } else { %>
+  <% posts.forEach(post => { %>
+    <div class="post-card">
+      <h2><a href="/posts/<%= post.id %>"><%= post.title %></a></h2>
+      <p><%= post.createdAt.toLocaleDateString('ru') %></p>
+    </div>
+  <% }) %>
+<% } %>
+
+<%- include('../partials/footer') %>

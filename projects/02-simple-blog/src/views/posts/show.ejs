@@ -1,0 +1,15 @@
+<%- include('../partials/header') %>
+
+<h1><%= post.title %></h1>
+<p class="date"><%= post.createdAt.toLocaleDateString('ru') %></p>
+<p><%= post.body %></p>
+
+<div class="actions">
+  <a href="/posts/<%= post.id %>/edit">Редактировать</a>
+
+  <form method="POST" action="/posts/<%= post.id %>/delete">
+    <button type="submit">Удалить</button>
+  </form>
+</div>
+
+<%- include('../partials/footer') %>

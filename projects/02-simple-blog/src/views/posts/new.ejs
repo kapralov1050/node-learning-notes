@@ -1,0 +1,17 @@
+<%- include('../partials/header') %>
+
+<h1>Новая статья</h1>
+
+<form method="POST" action="/posts">
+  <div>
+    <label>Заголовок</label>
+    <input type="text" name="title" required>
+  </div>
+  <div>
+    <label>Текст</label>
+    <textarea name="body" rows="8" required></textarea>
+  </div>
+  <button type="submit">Опубликовать</button>
+</form>
+
+<%- include('../partials/footer') %>

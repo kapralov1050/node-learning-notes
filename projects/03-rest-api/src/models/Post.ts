@@ -27,7 +27,8 @@ export const PostModel = {
     })
   },
 
-  update(id: number, data: Pick<Post, 'title' | 'body'>): Post | undefined {
+
+  update(id: number, data: Partial<Pick<Post, 'title' | 'body'>>): Post | undefined {
     const posts = this.findAll();
     const index = posts.findIndex(post => {
       return post.id === id;

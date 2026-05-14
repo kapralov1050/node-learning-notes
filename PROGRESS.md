@@ -1,7 +1,7 @@
 # Прогресс обучения Node.js
 
 ## Текущий этап
-**Этап 3 — REST API + Валидация (zod) + Загрузка файлов (Multer)**
+**Этап 4 — PostgreSQL + Prisma**
 
 Статус: ⏳ Не начат
 
@@ -13,7 +13,7 @@
 |---|------|--------|------------|
 | 1 | Ядро Node.js (Event Loop, модули, Streams, HTTP) | ✅ Готов | `01-mini-framework` |
 | 2 | Express.js + Шаблонизаторы (EJS) + MVC + Static files | ✅ Готов | `02-simple-blog` |
-| 3 | REST API + Валидация (zod) + Загрузка файлов (Multer) | ⏳ Не начат | `03-rest-api` |
+| 3 | REST API + Валидация (zod) + Загрузка файлов (Multer) | ✅ Готов | `03-rest-api` |
 | 4 | PostgreSQL + Prisma | ⏳ Не начат | `04-api-with-db` |
 | 5 | MongoDB + Mongoose | ⏳ Не начат | `05-mongo-notes` |
 | 6 | Аутентификация: Сессии/куки → JWT + bcrypt | ⏳ Не начат | `06-auth-service` |
@@ -49,6 +49,11 @@
   - Middleware-цепочка через next()
   - Роутинг с параметрами (:id)
   - Расширение req/res своими методами (json, status)
+
+### 2026-05-14
+- Этап 3 завершён: REST API с JSON, zod-валидация, error middleware, Multer загрузка файлов
+- Разобрана цепочка middleware в роутере (upload.single → controller)
+- Протестировано через Postman и curl
 
 ### 2026-04-18
 - Обновлён план: добавлены Шаблонизаторы (EJS), MongoDB + Mongoose, WebSockets

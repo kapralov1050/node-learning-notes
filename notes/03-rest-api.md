@@ -1,6 +1,6 @@
 # Этап 3 — REST API + Валидация (zod) + Загрузка файлов (Multer)
 
-> Статус: ⏳ В процессе | Pet-проект: `03-rest-api`
+> Статус: ✅ Завершён | Pet-проект: `03-rest-api`
 
 ---
 
@@ -169,28 +169,85 @@ z.nullable()            // может быть null
 
 ---
 
-## 7. Обработка ошибок в Express
+## 7. Несколько middleware в одном маршруте
 
-### Стандартный error middleware
-
-Express имеет специальный middleware для ошибок — четыре аргумента вместо трёх:
+Express принимает любое количество middleware в маршруте — они выполняются слева направо:
 
 ```ts
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Internal Server Error' });
-});
+router.post('/:id/cover', upload.single('image'), postController.uploadCover);
+//                         ^^^^^^^^^^^^^^^^^^^      ^^^^^^^^^^^^^^^^^^^^^^^^^
+//                         middleware 1              middleware 2 (контроллер)
 ```
 
-Вызывается когда передаёшь ошибку в `next(err)`:
+`upload.single('image')` запускается первым — обрабатывает файл и кладёт его в `req.file`. Только потом вызывается `uploadCover` — к этому моменту `req.file` уже заполнен.
+
+Можно цепочить сколько угодно:
 
 ```ts
-app.get('/posts/:id', async (req, res, next) => {
+router.post('/admin', checkAuth, checkRole('admin'), logAction, controller.create);
+```
+
+Каждый middleware делает свою работу и вызывает `next()`. Если один из них вызовет `next(err)` — цепочка прерывается и управление переходит к error middleware.
+
+---
+
+## 8. Обработка ошибок в Express
+
+### Как next(err) находит error middleware
+
+`next()` без аргументов — иди дальше по обычной цепочке.
+`next(err)` с аргументом — перепрыгни все обычные middleware и маршруты, найди error middleware.
+
+Express различает error middleware по **количеству аргументов** — ровно четыре:
+
+```ts
+// Обычный middleware — 3 аргумента
+app.use((req, res, next) => { ... });
+
+// Error middleware — 4 аргумента (даже если next не используется)
+app.use((err, req, res, next) => { ... });
+```
+
+### Порядок регистрации — всегда последним
+
+```ts
+// app.ts
+app.use(express.json());
+app.use('/api/posts', postsRouter);
+app.get('/', handler);
+
+app.use(errorHandler); // ← ПОСЛЕДНИМ, после всех маршрутов
+```
+
+Если зарегистрировать раньше — ошибки из маршрутов зарегистрированных после него до него не дойдут.
+
+### next(err) vs throw
+
+В синхронном коде оба варианта работают:
+
+```ts
+// throw — Express 4 перехватывает синхронные throw в обработчиках
+throw new AppError(404, 'Not found');
+
+// next(err) — явный и предпочтительный стиль
+return next(new AppError(404, 'Not found'));
+```
+
+В **асинхронном** коде `throw` не перехватывается — только `next(err)` или `try/catch`:
+
+```ts
+// ❌ — необработанное отклонение промиса
+app.get('/:id', async (req, res) => {
+  const post = await PostModel.findById(id); // бросит — никто не поймает
+});
+
+// ✅
+app.get('/:id', async (req, res, next) => {
   try {
-    const post = await PostModel.findById(Number(req.params.id));
+    const post = await PostModel.findById(id);
     res.json(post);
   } catch (err) {
-    next(err); // передать в error middleware
+    next(err);
   }
 });
 ```
@@ -200,23 +257,28 @@ app.get('/posts/:id', async (req, res, next) => {
 ```ts
 class AppError extends Error {
   constructor(public statusCode: number, message: string) {
-    super(message);
+    super(message); // устанавливает this.message через родительский Error
   }
 }
 
 // В контроллере
-throw new AppError(404, 'Post not found');
+return next(new AppError(404, 'Post not found'));
 
 // В error middleware
-app.use((err: AppError | Error, req: Request, res: Response, next: NextFunction) => {
-  const status = err instanceof AppError ? err.statusCode : 500;
-  res.status(status).json({ error: err.message });
-});
+export const errorHandler = (err: Error, req: Request, res: Response, next: NextFunction) => {
+  if (err instanceof AppError) {
+    return res.status(err.statusCode).json({ error: err.message });
+  }
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: err.message });
+  }
+  return res.status(500).json({ error: 'Internal Server Error' });
+};
 ```
 
 ---
 
-## 8. Загрузка файлов — Multer
+## 9. Загрузка файлов — Multer
 
 HTML-формы отправляют файлы в формате `multipart/form-data` — это не JSON и не urlencoded. Для обработки нужен Multer.
 
@@ -276,7 +338,42 @@ export const create = (req: Request, res: Response) => {
 
 ---
 
-## 9. Тестирование API
+## 10. Полная цепочка загрузки файла
+
+Важно понять что происходит по шагам — Multer и контроллер делают разные вещи:
+
+```
+Клиент отправляет multipart/form-data с полем 'image'
+  ↓
+upload.single('image')  ← Multer middleware
+  - читает файл из запроса
+  - проверяет MIME-тип через fileFilter
+  - сохраняет файл на диск: uploads/1234567890.jpg
+  - кладёт метаданные в req.file
+  - вызывает next()
+  ↓
+postController.uploadCover  ← контроллер
+  - читает req.file.filename
+  - формирует строку: '/uploads/1234567890.jpg'
+  - сохраняет эту строку в PostModel через updateImage()
+  - возвращает обновлённый пост клиенту
+  ↓
+Клиент получает пост с imageUrl: '/uploads/1234567890.jpg'
+```
+
+Чтобы файл был доступен по этому URL — нужно отдавать папку `uploads/` как статику:
+
+```ts
+// app.ts
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// теперь GET /uploads/1234567890.jpg → отдаёт файл с диска
+```
+
+Multer не создаёт папку `uploads/` автоматически — она должна существовать до первой загрузки.
+
+---
+
+## 11. Тестирование API
 
 В Этапе 2 тестировали через браузер. REST API возвращает JSON — нужны специальные инструменты.
 

@@ -3,7 +3,7 @@
 ## Текущий этап
 **Этап 4 — PostgreSQL + Prisma**
 
-Статус: ⏳ Не начат
+Статус: 🚧 В процессе
 
 ---
 
@@ -14,7 +14,7 @@
 | 1 | Ядро Node.js (Event Loop, модули, Streams, HTTP) | ✅ Готов | `01-mini-framework` |
 | 2 | Express.js + Шаблонизаторы (EJS) + MVC + Static files | ✅ Готов | `02-simple-blog` |
 | 3 | REST API + Валидация (zod) + Загрузка файлов (Multer) | ✅ Готов | `03-rest-api` |
-| 4 | PostgreSQL + Prisma | ⏳ Не начат | `04-api-with-db` |
+| 4 | PostgreSQL + Prisma | 🚧 В процессе | `04-api-with-db` |
 | 5 | MongoDB + Mongoose | ⏳ Не начат | `05-mongo-notes` |
 | 6 | Аутентификация: Сессии/куки → JWT + bcrypt | ⏳ Не начат | `06-auth-service` |
 | 7 | NestJS + архитектура (DI, модули, декораторы) | ⏳ Не начат | `07-nest-api` |
@@ -39,6 +39,10 @@
 
 ---
 
+## Следующие шаги (backlog)
+- [ ] Докинуть `author` в zod-схему (`src/schemas/postSchema.ts`) — сейчас поле отбрасывается при валидации и в БД ложится `@default("Anonymous")`
+- [ ] Обновить тип `create` в `src/models/Post.ts`, чтобы модель принимала `author`
+
 ## Лог
 
 ### 2026-04-15
@@ -61,3 +65,19 @@
 - Углублён конспект по Этапу 1 (notes/01-core.md)
 - Этап 2 завершён: SSR-блог с CRUD, MVC-архитектура, EJS-шаблоны, partials, статика
 - Разобрана XSS-атака на практике: <%= %> vs <%- %>
+
+### 2026-07-21
+- **Этап 4 начат: PostgreSQL + Prisma в Docker**
+- Развёрнули `04-api-with-db` в Docker-контейнерах (Postgres 16 + Node 20 alpine)
+- Создан multi-stage `Dockerfile` (builder → runner, без dev-зависимостей в финальном образе)
+- `docker-compose.yml` с healthcheck БД (`pg_isready`) и `depends_on: condition: service_healthy`
+- Применена начальная миграция `init` (CREATE TABLE Post) через `prisma migrate deploy` в CMD контейнера
+- Сгенерирована вторая миграция `add_author` (ALTER TABLE ADD COLUMN) — попрактиковались в изменении схемы
+- Подняли всё вместе (`docker-compose up --build`) → API отвечает на `http://localhost:3000/api/posts`
+- Разобраны:
+  - связка `package.json` ↔ `Dockerfile` ↔ `docker-compose.yml` (роль каждого)
+  - механизм миграций как версионированных SQL-слепков
+  - проблема hardcoded-порта в `app.ts` → переход на `process.env.PORT`
+  - DNS внутри Docker-сети (`db` как hostname) vs `localhost` с хоста
+  - override `DATABASE_URL` через переменную окружения для запуска миграций с хоста
+- **Недоделано:** zod-схема не знает про поле `author` (поэтому в БД ложится `@default("Anonymous")`), нужно обновить `postSchema.ts` и модель `Post.ts`

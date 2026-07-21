@@ -297,3 +297,143 @@ Controller и Router не меняются — они не знают как х�
 5. Чем `findUnique` отличается от `findFirst`?
 6. Почему нужно создавать один экземпляр `PrismaClient` на всё приложение?
 7. Что произойдёт если вызвать `prisma.post.update` для несуществующей записи?
+
+---
+
+## 11. Миграции на практике: что внутри папки `migrations/`
+
+Каждая миграция — папка с именем-таймстампом и SQL-файлом внутри:
+
+```
+prisma/migrations/
+├── migration_lock.toml          # какая БД использовалась
+├── 20260527174230_init/         # первая миграция
+│   └── migration.sql
+└── 20260721182024_add_author/   # вторая (после изменения схемы)
+    └── migration.sql
+```
+
+**Имя папки = `YYYYMMDDhhmmss_<name>`**. По нему Prisma понимает порядок.
+
+Когда добавляешь новое поле в `schema.prisma`, **не редактируй старые миграции** — это сломает историю. Создавай новую:
+
+```bash
+npx prisma migrate dev --name add_author
+```
+
+Prisma сравнит схему с **текущей БД**, сгенерит только разницу (один `ALTER TABLE ADD COLUMN`) и положит в новую папку.
+
+### `migrate dev` vs `migrate deploy` vs `db push`
+
+| Команда | Когда | Что делает |
+|---|---|---|
+| `migrate dev` | Локальная разработка | Создаёт миграцию **и применяет** её |
+| `migrate deploy` | CI/CD, Docker | Только **применяет** уже существующие |
+| `db push` | Прототипы, хакатоны | Толкает схему напрямую, **без миграций** |
+
+В Docker используется `deploy` — там никто не пишет миграции, только применяет готовые.
+
+---
+
+## 12. Prisma + Docker: полная цепочка
+
+### `docker-compose.yml` поднимает два сервиса
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]   # ⬅ ждём готовности БД
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy                     # ⬅ не стартовать, пока БД не ready
+    env_file: .env
+```
+
+### `Dockerfile` (multi-stage)
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /usr/src/app
+COPY package*.json ./
+COPY prisma ./prisma
+RUN npm ci
+RUN npx prisma generate       # ⬅ генерирует клиент ДО сборки
+COPY . .
+RUN npm run build             # tsc → dist/
+
+FROM node:20-alpine AS runner
+WORKDIR /usr/src/app
+ENV NODE_ENV=production
+COPY package*.json ./
+COPY prisma ./prisma
+RUN npm ci --omit=dev
+COPY --from=builder /usr/src/app/dist ./dist
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/app.js"]
+```
+
+`CMD` делает две вещи по порядку: **применяет миграции**, потом **запускает приложение**. Если миграция упадёт — приложение не стартанёт, что хорошо (fail-fast).
+
+### `.env` внутри Docker-сети
+
+```
+DATABASE_URL="postgresql://postgres:postgres@db:5432/api?schema=public"
+```
+
+`db` — это **имя сервиса** в `docker-compose.yml`. Docker автоматически создаёт DNS-алиас внутри сети, и контейнеры обращаются друг к другу по этим именам.
+
+### Хост vs контейнер
+
+С **хоста** (с твоего Mac) `db:5432` не резолвится — нужно `localhost:5432`. Поэтому при запуске миграций руками переопределяй:
+
+```bash
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/api?schema=public" \
+  npx prisma migrate dev --name имя_миграции
+```
+
+### Иерархия файлов
+
+```
+docker-compose.yml          "что запускать"
+   └── Dockerfile           "как собирать"
+         └── package.json    "что внутри проекта"
+               └── prisma/schema.prisma   "какая структура БД"
+```
+
+---
+
+## 13. Gotcha: hardcoded-порт vs `process.env.PORT`
+
+Типичная ошибка в `app.ts`:
+
+```ts
+// ❌ Порт захардкожен — .env и Docker игнорируются
+const port = 3002;
+
+// ✅ Читаем из окружения, с дефолтом
+const port = Number(process.env.PORT) || 3000;
+```
+
+Без этого правки `.env` и маппингов портов в `docker-compose.yml` не работают.
+
+---
+
+## 14. Gotcha: `prisma.config.ts` перебивает `.env`
+
+Если в проекте есть `prisma.config.ts` с `import "dotenv/config"` — он загружает `.env` **до** того, как Prisma читает переменные окружения. Это значит:
+
+- `DATABASE_URL=... npx prisma ...` из терминала **перебьёт** значение из `.env`
+- Удобно для override с хоста (когда `db` не резолвится)
+
+---
+
+## Контрольные вопросы (дополнение)
+
+8. Чем `migrate dev` отличается от `migrate deploy`?
+9. Почему `Dockerfile` использует `prisma generate` ДО `npm run build`?
+10. Почему в Docker-сети имя БД `db`, а с хоста — `localhost`?
+11. Зачем в `CMD` стоит `prisma migrate deploy && node dist/app.js` (а не просто `node`)?
+12. Что будет, если в `app.ts` оставить hardcoded-порт и поменять `docker-compose.yml`?

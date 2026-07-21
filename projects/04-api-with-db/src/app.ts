@@ -3,7 +3,7 @@ import postsRouter from './routes/posts';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
-const port = 3002;
+const port = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 app.use('/api/posts', postsRouter);

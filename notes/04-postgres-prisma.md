@@ -437,3 +437,470 @@ const port = Number(process.env.PORT) || 3000;
 10. Почему в Docker-сети имя БД `db`, а с хоста — `localhost`?
 11. Зачем в `CMD` стоит `prisma migrate deploy && node dist/app.js` (а не просто `node`)?
 12. Что будет, если в `app.ts` оставить hardcoded-порт и поменять `docker-compose.yml`?
+
+---
+
+## 15. Связи в реляционных БД — фундамент SQL
+
+Реляционная БД отличается от документной тем, что **связи между сущностями — это не вложенность, а отдельные таблицы с внешними ключами**. Благодаря этому данные нормализованы и не дублируются.
+
+### Три типа связей
+
+| Тип | Суть | Пример | SQL-механизм |
+|---|---|---|---|
+| **1:1** | У одной записи ровно одна связанная | `User ↔ UserProfile` | `UNIQUE` на внешнем ключе |
+| **1:N** (one-to-many) | У одной записи много связанных | `User → Post`, `Author → Book` | `FOREIGN KEY` на стороне «многих» |
+| **M:N** (many-to-many) | У многих записей много связанных с каждой | `Post ↔ Tag`, `Student ↔ Course` | Отдельная **join-таблица** |
+
+### Зачем нужна нормализация
+
+**Плохо** (как часто делают новички — «всё в одной таблице»):
+
+```
+Post: { id, title, body, authorName, authorEmail, authorBio }
+```
+
+Проблемы: если автор поменяет имя — нужно обновить все его посты. Если удалить один пост — потеряем email автора.
+
+**Хорошо** (две таблицы + связь):
+
+```
+User:  { id, name, email, bio }
+Post:  { id, title, body, authorId → User.id }
+```
+
+Автор хранится в одном месте. Удалили пост — автор на месте.
+
+### Что такое «внешний ключ» (FOREIGN KEY)
+
+Это колонка в одной таблице, которая **ссылается на `id` (или другое уникальное поле) другой таблицы**. СУБД следит, чтобы ссылка не указывала «в пустоту»:
+
+```sql
+ALTER TABLE "Post"
+  ADD CONSTRAINT fk_post_user
+  FOREIGN KEY ("authorId") REFERENCES "User"("id");
+```
+
+Попытка создать пост с несуществующим `authorId` — ошибка. Попытка удалить пользователя, на которого ссылаются посты — тоже ошибка (если не задан `ON DELETE`).
+
+---
+
+## 16. Связь 1:N в Prisma — `User → Post`
+
+### Что в схеме
+
+```prisma
+model User {
+  id        Int     @id @default(autoincrement())
+  name      String
+  email     String  @unique
+  posts     Post[]              // ⬅ обратная сторона связи (на стороне "1")
+}
+
+model Post {
+  id        Int     @id @default(autoincrement())
+  title     String
+  body      String
+  authorId  Int                // ⬅ внешний ключ (на стороне "N")
+  author    User  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  //                                ^^^^^^^^   ^^^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^
+  //                                какое поле связывает | на какое поле ссылается | что делать при удалении
+}
+
+@@index([authorId])             // ⬅ Prisma сама добавляет индекс на FK
+```
+
+### Разбор `@relation`
+
+- `fields: [authorId]` — поле в **этой** модели (Post), которое является FK
+- `references: [id]` — поле в **той** модели (User), на которое ссылаемся
+- Две модели **должны** знать друг о друге — поэтому в `User` тоже есть `posts Post[]`
+
+### Поведение при удалении (`onDelete`)
+
+| Значение | Что произойдёт при удалении User, у которого есть посты |
+|---|---|
+| `Cascade` | Все его посты удалятся автоматически |
+| `SetNull` | У постов `authorId` станет `NULL` (нужно `authorId Int?`) |
+| `Restrict` | Удаление упадёт с ошибкой, пока есть посты |
+| `NoAction` | То же, что `Restrict` в Postgres |
+
+Для **учебного проекта** обычно хватает `Cascade` — чтобы упростить очистку тестовых данных.
+
+### Миграция
+
+```bash
+npx prisma migrate dev --name add_user_relation
+```
+
+Prisma создаст:
+```sql
+CREATE TABLE "User" (...);
+ALTER TABLE "Post" ADD COLUMN "authorId" INTEGER;
+ALTER TABLE "Post" ADD CONSTRAINT "Post_authorId_fkey"
+  FOREIGN KEY ("authorId") REFERENCES "User"("id") ON DELETE CASCADE;
+```
+
+⚠️ Уже существующие посты получат `authorId = NULL` (если поле nullable) или миграция **упадёт**, если поле обязательное и нет значения по умолчанию.
+
+### CRUD со связью
+
+```ts
+// Создать пользователя
+const user = await prisma.user.create({
+  data: { name: 'Alice', email: 'alice@test.com' }
+});
+
+// Создать пост с привязкой к автору — вложенный create
+const post = await prisma.post.create({
+  data: {
+    title: 'Hello',
+    body: 'Text',
+    author: { connect: { id: user.id } }     // ⬅ связь по id
+  }
+});
+
+// Или через connectOrCreate (если пользователя может не быть)
+const post2 = await prisma.post.create({
+  data: {
+    title: 'Hi',
+    body: 'Text',
+    author: { connectOrCreate: {
+      where: { email: 'bob@test.com' },
+      create: { name: 'Bob', email: 'bob@test.com' }
+    }}
+  }
+});
+```
+
+### `posts Post[]` на стороне «1» — зачем?
+
+Это «обратная сторона связи» в Prisma. Без неё TypeScript бы не знал, что у `User` есть поле `posts`. Через неё можно делать:
+
+```ts
+const user = await prisma.user.findUnique({
+  where: { id: 1 },
+  include: { posts: true }      // ⬅ подтянет все посты пользователя
+});
+```
+
+---
+
+## 17. Связь M:N в Prisma — `Post ↔ Tag`
+
+### Неявная (implicit) join-таблица
+
+Prisma 6 создаёт join-таблицу автоматически:
+
+```prisma
+model Post {
+  id    Int    @id @default(autoincrement())
+  title String
+  tags  Tag[]
+}
+
+model Tag {
+  id    Int    @id @default(autoincrement())
+  name  String  @unique
+  posts Post[]
+}
+```
+
+Prisma сама сгенерит таблицу `_PostTags` с колонками `A` и `B` (имена `Post.id` и `Tag.id`). Удобно, но менее гибко.
+
+### Явная (explicit) join-таблица — для учебного проекта лучше
+
+```prisma
+model Post {
+  id    Int       @id @default(autoincrement())
+  title String
+  tags  PostTag[]
+}
+
+model Tag {
+  id    Int       @id @default(autoincrement())
+  name  String    @unique
+  posts PostTag[]
+}
+
+model PostTag {
+  post      Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag       Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  postId    Int
+  tagId     Int
+
+  @@id([postId, tagId])                  // составной первичный ключ
+  @@index([tagId])                        // для быстрого поиска постов по тегу
+}
+```
+
+Зачем явная таблица:
+- Можно добавить поля к самой связи (`addedAt`, `addedBy`)
+- Имена колонок предсказуемые
+- Видна структура в БД
+
+### CRUD с M:N
+
+```ts
+// Создать теги при создании поста
+const post = await prisma.post.create({
+  data: {
+    title: 'Hello',
+    body: '...',
+    tags: {
+      create: [
+        { tag: { connect: { name: 'nodejs' } } },    // подключить существующий
+        { tag: { connect: { name: 'docker' } } },
+        { tag: { create: { name: 'prisma' } } }      // или создать новый
+      ]
+    }
+  }
+});
+
+// Добавить тег к существующему посту
+await prisma.postTag.create({
+  data: { postId: 1, tagId: 5 }
+});
+
+// Удалить связь (тег у поста)
+await prisma.postTag.delete({
+  where: { postId_tagId: { postId: 1, tagId: 5 } }
+});
+```
+
+---
+
+## 18. JOIN через `include` и вложенные запросы
+
+`include` — это сахар над SQL-`JOIN`. Prisma вытягивает связанные сущности одним запросом (не делает N+1).
+
+### Простой include
+
+```ts
+const post = await prisma.post.findUnique({
+  where: { id: 1 },
+  include: { author: true }      // ⬅ подтянет User
+});
+// { id: 1, title: '...', author: { id: 5, name: 'Alice', email: '...' } }
+```
+
+### Вложенный include
+
+```ts
+const user = await prisma.user.findUnique({
+  where: { id: 1 },
+  include: {
+    posts: {
+      include: {
+        tags: { include: { tag: true } }   // ⬅ посты → их теги → сам тег
+      }
+    }
+  }
+});
+```
+
+### Фильтрация и сортировка внутри include
+
+```ts
+const user = await prisma.user.findUnique({
+  where: { id: 1 },
+  include: {
+    posts: {
+      where: { published: true },
+      orderBy: { createdAt: 'desc' },
+      take: 5                              // ⬅ топ-5 постов
+    }
+  }
+});
+```
+
+### Под капотом
+
+`include: { author: true }` ≈ SQL:
+```sql
+SELECT p.*, u.*
+FROM "Post" p
+LEFT JOIN "User" u ON p."authorId" = u."id"
+WHERE p."id" = 1;
+```
+
+Prisma **не делает отдельный запрос на автора** — это и есть защита от N+1.
+
+---
+
+## 19. `select` — выборка только нужных полей
+
+### Проблема: `select *` тянет всё
+
+`findUnique` без select вернёт **все колонки**. Если в посте есть поле `body` размером 5000 символов, а тебе нужен только `title` — тратится трафик.
+
+### select — вернуть только нужные поля
+
+```ts
+const post = await prisma.post.findUnique({
+  where: { id: 1 },
+  select: { id: true, title: true, authorId: true }
+});
+// { id: 1, title: 'Hello', authorId: 5 }
+```
+
+### select с include
+
+```ts
+const post = await prisma.post.findUnique({
+  where: { id: 1 },
+  select: {
+    title: true,
+    author: { select: { name: true, email: true } }   // ⬅ вложенный select
+  }
+});
+// { title: 'Hello', author: { name: 'Alice', email: 'a@...' } }
+```
+
+### select + include — взаимоисключающие
+
+Нельзя одновременно `select` и `include` на **одном уровне**. Выбирай одно:
+
+```ts
+// ❌ Ошибка
+await prisma.post.findUnique({
+  select: { id: true },
+  include: { author: true }
+});
+
+// ✅ Вариант 1: только select с вложенным select
+await prisma.post.findUnique({
+  select: { id: true, author: { select: { name: true } } }
+});
+
+// ✅ Вариант 2: только include
+await prisma.post.findUnique({
+  include: { author: true }
+});
+```
+
+---
+
+## 20. Индексы — `@index`
+
+### Зачем индексы
+
+Без индекса Postgres делает **последовательный скан** таблицы — линейный перебор всех строк. При 1 млн записей это медленно. Индекс — структура данных (обычно B-tree), которая позволяет находить строку за `O(log n)`.
+
+```sql
+-- Без индекса:
+SELECT * FROM "Post" WHERE "authorId" = 5;     -- Seq Scan, ~100ms
+-- С индексом:
+-- Index Scan, ~1ms
+```
+
+### В Prisma — `@index`
+
+```prisma
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  authorId  Int
+  author    User     @relation(fields: [authorId], references: [id])
+
+  @@index([authorId])           // ⬅ индекс на одной колонке
+  @@index([authorId, createdAt]) // ⬅ составной индекс
+}
+```
+
+### Когда добавлять индекс
+
+- **Всегда** на внешних ключах (FK) — Prisma добавляет сама, но если удалишь — будет медленно
+- На полях, по которым часто ищешь (`WHERE email = ?`)
+- На полях сортировки (`ORDER BY createdAt`)
+- **Не** создавай индексы «на всякий случай» — они замедляют INSERT/UPDATE и занимают место
+
+### Уникальный индекс
+
+```prisma
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique       // ⬅ = UNIQUE INDEX
+}
+```
+
+`@unique` — это и валидация (на уровне БД), и индекс одновременно.
+
+### Миграция индекса
+
+```sql
+-- Сгенерируется автоматически
+CREATE INDEX "Post_authorId_idx" ON "Post"("authorId");
+
+-- Для составного
+CREATE INDEX "Post_authorId_createdAt_idx" ON "Post"("authorId", "createdAt");
+```
+
+---
+
+## 21. Агрегации — `count`, `groupBy`, `aggregate`
+
+### `count` — сколько записей
+
+```ts
+const count = await prisma.post.count();
+const userPostCount = await prisma.post.count({ where: { authorId: 5 } });
+```
+
+С `include`:
+```ts
+const user = await prisma.user.findUnique({
+  where: { id: 5 },
+  include: { _count: { select: { posts: true } } }      // ⬅ "_count: { select: ..." — особый синтаксис
+});
+// { id: 5, name: 'Alice', _count: { posts: 3 } }
+```
+
+### `groupBy` — GROUP BY в SQL
+
+```ts
+const stats = await prisma.post.groupBy({
+  by: ['authorId'],
+  _count: { _all: true },
+  _avg: { id: true },
+  orderBy: { _count: { id: 'desc' } }
+});
+// [
+//   { authorId: 1, _count: { _all: 42 }, _avg: { id: 15 } },
+//   { authorId: 2, _count: { _all: 18 }, _avg: { id: 10 } }
+// ]
+```
+
+Это SQL:
+```sql
+SELECT "authorId", COUNT(*), AVG("id")
+FROM "Post"
+GROUP BY "authorId"
+ORDER BY COUNT(*) DESC;
+```
+
+### `aggregate` — любая агрегатная функция
+
+```ts
+const result = await prisma.post.aggregate({
+  _min: { id: true },
+  _max: { id: true },
+  _avg: { id: true },
+  _sum: { id: true }
+});
+// { _min: { id: 1 }, _max: { id: 100 }, _avg: { id: 50.5 }, _sum: { id: 5050 } }
+```
+
+---
+
+## Контрольные вопросы (часть 3 — связи и оптимизация)
+
+13. Почему в реляционной БД плохо хранить вложенные данные в одной таблице?
+14. Что делает `FOREIGN KEY`? Что произойдёт при попытке сослаться на несуществующую запись?
+15. Чем `onDelete: Cascade` отличается от `onDelete: Restrict`?
+16. Зачем нужна явная join-таблица для M:N, если Prisma умеет делать неявную?
+17. Что такое N+1 проблема и как `include` её решает?
+18. Можно ли использовать `select` и `include` одновременно на одном уровне?
+19. Зачем нужен индекс на FK? Когда индекс **не** нужен?
+20. Чем `groupBy` отличается от `findMany`?
+21. Как одним запросом получить пользователя с количеством его постов?
